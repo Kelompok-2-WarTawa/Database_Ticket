@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: ticket-system-core
+Version: 1.0.0
+Summary: Core Database Models for Ticket System
+Requires-Dist: SQLAlchemy
+Requires-Dist: alembic
+Requires-Dist: psycopg2-binary
+Requires-Dist: bcrypt
+Dynamic: requires-dist
+Dynamic: summary

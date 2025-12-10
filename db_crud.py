@@ -2,7 +2,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, joinedload
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import or_
-from models import User, Event, Booking, Payment
+# from models import User, Event, Booking, Payment <-- HAPUS 
+from ticket_system_core.models import User, Event, Booking, Payment # <-- GANTI 
 import bcrypt 
 from datetime import datetime
 import random
