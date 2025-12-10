@@ -28,14 +28,61 @@ def check_password(raw_password: str, hashed_password: str | None) -> bool:
     return bcrypt.checkpw(raw_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 def generate_booking_code() -> str:
-    """Membuat kode unik: BKG-9X2A1"""
     chars = string.ascii_uppercase + string.digits
     random_str = ''.join(random.choice(chars) for _ in range(5))
     return f"BKG-{random_str}"
 
+# --- HELPER INPUT VALIDATION (Agar Tidak Crash) ---
+
+def get_valid_int(prompt: str) -> int:
+    """Meminta input integer berulang kali sampai benar."""
+    while True:
+        value = input(prompt).strip()
+        try:
+            return int(value)
+        except ValueError:
+            print("❌ Input harus berupa ANGKA BULAT. Silakan coba lagi.")
+
+def get_valid_float(prompt: str) -> float:
+    """Meminta input float (desimal) berulang kali sampai benar."""
+    while True:
+        value = input(prompt).strip()
+        try:
+            return float(value)
+        except ValueError:
+            print("❌ Input harus berupa ANGKA (bisa desimal). Silakan coba lagi.")
+
+def get_valid_date(prompt: str) -> str:
+    """Meminta input tanggal format YYYY-MM-DD HH:MM:SS."""
+    while True:
+        value = input(prompt).strip()
+        try:
+            datetime.strptime(value, '%Y-%m-%d %H:%M:%S')
+            return value
+        except ValueError:
+            print("❌ Format Tanggal Salah! Gunakan: YYYY-MM-DD HH:MM:SS (Contoh: 2025-12-31 18:00:00)")
+
+def authenticate_admin() -> User | None:
+    """Gerbang Login Admin sebelum melakukan aksi."""
+    print("\n🔒 AKSES ADMIN DIPERLUKAN")
+    email = input("Masukkan Email Admin: ")
+    pwd = input("Masukkan Password: ")
+    
+    session = Session()
+    try:
+        user = session.query(User).filter_by(email=email).first()
+        if user and user.role == 'Admin' and check_password(pwd, user.password):
+            print(f"✅ Akses Diberikan. Halo {user.name}.")
+            return user
+        else:
+            print("❌ AKSES DITOLAK: Email/Password salah atau bukan Admin.")
+            return None
+    finally:
+        session.close()
+
 
 # ===============================================
-# [1] CRUD USER (Expanded)
+# [1] CRUD USER
 # ===============================================
 
 def add_user(name: str, email: str, raw_password: str, role: str) -> User | None:
@@ -125,30 +172,27 @@ def login_user(email: str, raw_password: str) -> bool:
 
 
 # ===============================================
-# [2] CRUD EVENT (Expanded)
+# [2] CRUD EVENT
 # ===============================================
 
-def add_event(admin_email: str, name: str, description: str, date_str: str, venue: str, capacity: int, ticket_price: float) -> Event | None:
+def add_event(admin_user: User, name: str, description: str, date_str: str, venue: str, capacity: int, ticket_price: float) -> Event | None:
+    # Perhatikan: Argumen pertama sekarang adalah OBJEK User (Admin) yang sudah terautentikasi
     session = Session()
     try:
-        admin = session.query(User).filter_by(email=admin_email).first()
-        if not admin or admin.role != 'Admin':
-            print("❌ Akses Ditolak: Hanya Admin yang bisa membuat event.")
-            return None
-
         event_dt = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
         new_event = Event(
-            admin_id=admin.id, name=name, description=description,
+            admin_id=admin_user.id, 
+            name=name, description=description,
             date=event_dt, venue=venue, capacity=capacity, ticket_price=ticket_price
         )
         session.add(new_event)
         session.commit()
         print(f"✅ Event Created: '{name}'")
         return new_event
-    except ValueError:
-        print("❌ Format tanggal salah (YYYY-MM-DD HH:MM:SS)")
     except Exception as e:
+        session.rollback()
         print(f"❌ Error: {e}")
+        return None
     finally:
         session.close()
 
@@ -160,7 +204,6 @@ def get_all_events() -> list[Event]:
         session.close()
 
 def search_events(keyword: str) -> list[Event]:
-    """Mencari event berdasarkan Nama atau Venue (Case Insensitive)."""
     session = Session()
     try:
         search = f"%{keyword}%"
@@ -210,7 +253,7 @@ def delete_event(event_id: int) -> bool:
             return True
         print("❌ Event tidak ditemukan.")
         return False
-    except Exception as e: # Handle FK constraint (hapus booking dulu)
+    except Exception as e:
         session.rollback()
         print(f"❌ Gagal Hapus: Event mungkin memiliki booking aktif. Hapus booking terlebih dahulu.")
         return False
@@ -219,7 +262,7 @@ def delete_event(event_id: int) -> bool:
 
 
 # ===============================================
-# [3] CRUD BOOKING (Expanded)
+# [3] CRUD BOOKING
 # ===============================================
 
 def add_booking(customer_email: str, event_id: int, quantity: int) -> Booking | None:
@@ -239,10 +282,9 @@ def add_booking(customer_email: str, event_id: int, quantity: int) -> Booking | 
             print(f"❌ Kapasitas Penuh! Tersisa: {event.capacity}")
             return None
 
-        # Logic Booking
         total = event.ticket_price * quantity
         code = generate_booking_code()
-        event.capacity -= quantity # Kurangi kapasitas
+        event.capacity -= quantity 
 
         new_bk = Booking(
             customer_id=cust.id, event_id=event.id,
@@ -290,7 +332,6 @@ def cancel_booking(booking_code: str) -> bool:
             print("❌ Booking tidak ditemukan.")
             return False
         
-        # Kembalikan kapasitas
         event = session.query(Event).filter_by(id=bk.event_id).first()
         if event: event.capacity += bk.quantity
             
@@ -303,13 +344,13 @@ def cancel_booking(booking_code: str) -> bool:
 
 
 # ===============================================
-# MENU UTAMA (Grouped)
+# MENU UTAMA (Safe & Robust)
 # ===============================================
 
 def main_menu():
     while True:
         print("\n" + "="*40)
-        print("   TICKET SYSTEM SUPER APP (Admin/Cust)")
+        print("   TICKET SYSTEM SUPER APP")
         print("="*40)
         
         print("\n[👤 USER MANAGEMENT]")
@@ -321,79 +362,119 @@ def main_menu():
         print("6.  Delete User")
         print("7.  Login Simulation")
 
-        print("\n[📅 EVENT MANAGEMENT]")
-        print("8.  Create Event (Admin Only)")
+        print("\n[📅 EVENT MANAGEMENT (Admin Login Required)]")
+        print("8.  Create Event")
         print("9.  List All Events")
         print("10. Search Events (by Name/Venue)")
         print("11. List Events by Admin")
-        print("12. Update Event Details (Date/Venue)")
-        print("13. Update Event Price") # Opsional, bisa digabung tapi dipisah biar banyak fitur
-        print("14. Delete Event")
+        print("12. Update Event Details")
+        print("13. Delete Event")
 
         print("\n[🎫 BOOKING SYSTEM]")
-        print("15. Book Ticket (Customer Only)")
-        print("16. List All Bookings (Admin View)")
-        print("17. My Bookings (Customer History)")
-        print("18. Check Booking Status (by Code)")
-        print("19. Cancel Booking")
+        print("14. Book Ticket (Customer Only)")
+        print("15. List All Bookings (Admin View)")
+        print("16. My Bookings (Customer History)")
+        print("17. Check Booking Status (by Code)")
+        print("18. Cancel Booking")
         
         print("\n0.  EXIT")
         
-        c = input("\n>> Pilih Menu (0-19): ").strip()
+        c = input("\n>> Pilih Menu (0-18): ").strip()
 
         # --- USER ---
         if c == '1':
-            add_user(input("Nama: "), input("Email: "), input("Password: "), input("Role (Customer/Admin): "))
+            name = input("Nama: ")
+            email = input("Email: ")
+            raw_pass = input("Password: ")
+            role = input(f"Role ({'/'.join(VALID_ROLES)}): ").strip()
+            add_user(name, email, raw_pass, role)
+        
         elif c == '2':
             for u in get_all_users(): print(f"[{u.id}] {u.name} | {u.email} | {u.role}")
+        
         elif c == '3':
             u = get_user_by_email(input("Email: "))
             print(f"Found: {u.name} ({u.role})" if u else "Not Found")
+        
         elif c == '4':
             update_user_profile(input("Email: "), input("New Name: "))
+        
         elif c == '5':
             update_user_password(input("Email: "), input("New Password: "))
+        
         elif c == '6':
             delete_user(input("Email to Delete: "))
+        
         elif c == '7':
             login_user(input("Email: "), input("Password: "))
 
-        # --- EVENT ---
-        elif c == '8':
-            add_event(input("Admin Email: "), input("Event Name: "), input("Desc: "), input("Date (YYYY-MM-DD HH:MM:SS): "), input("Venue: "), int(input("Capacity: ")), float(input("Price: ")))
+        # --- EVENT (SECURED) ---
+        elif c == '8': # CREATE EVENT
+            admin = authenticate_admin() # <-- Gerbang Login
+            if admin:
+                print(f"\n--- Creating Event as {admin.name} ---")
+                name = input("Event Name: ")
+                desc = input("Desc: ")
+                venue = input("Venue: ")
+                # Panggil Helper untuk mencegah crash
+                date_str = get_valid_date("Date (YYYY-MM-DD HH:MM:SS): ")
+                cap = get_valid_int("Capacity: ")
+                price = get_valid_float("Price: ")
+                
+                add_event(admin, name, desc, date_str, venue, cap, price)
+        
         elif c == '9':
             for e in get_all_events(): print(f"[{e.id}] {e.date} | {e.name} @ {e.venue} | Rp {e.ticket_price} | By: {e.admin.name if e.admin else '?'}")
+        
         elif c == '10':
             res = search_events(input("Keyword (Name/Venue): "))
             for e in res: print(f"- {e.name} di {e.venue}")
+        
         elif c == '11':
             res = get_events_by_admin(input("Admin Email: "))
             for e in res: print(f"- {e.name} ({e.date})")
+        
         elif c == '12':
-            eid = int(input("Event ID: "))
-            v = input("New Venue (kosongkan jika tetap): ")
-            d = input("New Date YYYY-MM-DD HH:MM:SS (kosongkan jika tetap): ")
-            update_event_details(eid, v if v else None, d if d else None)
+            admin = authenticate_admin() # <-- Gerbang Login (Update butuh Auth)
+            if admin:
+                eid = get_valid_int("Event ID to Update: ")
+                v = input("New Venue (kosongkan jika tetap): ")
+                d = input("New Date YYYY-MM-DD HH:MM:SS (kosongkan jika tetap): ")
+                if d: # Validasi format tanggal jika diisi
+                    try:
+                        datetime.strptime(d, '%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        print("❌ Format tanggal salah. Update dibatalkan.")
+                        d = None
+                
+                update_event_details(eid, v if v else None, d if d else None)
+
         elif c == '13':
-             # Fitur update price sederhana, bisa diimplementasikan ulang di fungsi update_event_details jika mau
-             # Tapi di sini saya anggap user ingin update terpisah
-             print("Gunakan opsi 12 untuk update detail, atau buat fungsi khusus update price jika perlu.") 
-        elif c == '14':
-            delete_event(int(input("Event ID to Delete: ")))
+            admin = authenticate_admin() # <-- Gerbang Login (Delete butuh Auth)
+            if admin:
+                eid = get_valid_int("Event ID to Delete: ")
+                delete_event(eid)
 
         # --- BOOKING ---
+        elif c == '14':
+            cust_email = input("Customer Email: ")
+            eid = get_valid_int("Event ID: ")
+            qty = get_valid_int("Qty: ")
+            add_booking(cust_email, eid, qty)
+        
         elif c == '15':
-            add_booking(input("Customer Email: "), int(input("Event ID: ")), int(input("Qty: ")))
-        elif c == '16':
             for b in get_all_bookings(): print(f"[{b.booking_code}] {b.customer.email} -> {b.event.name} ({b.quantity} pcs)")
-        elif c == '17':
+        
+        elif c == '16':
             res = get_bookings_by_customer(input("Customer Email: "))
             for b in res: print(f"- {b.booking_code}: {b.event.name} | Total: {b.total_price}")
-        elif c == '18':
+        
+        elif c == '17':
             b = get_booking_by_code(input("Booking Code: "))
             if b: print(f"VALID: {b.customer.name} going to {b.event.name} on {b.event.date}")
             else: print("INVALID CODE")
-        elif c == '19':
+        
+        elif c == '18':
             cancel_booking(input("Booking Code to Cancel: "))
 
         elif c == '0':
