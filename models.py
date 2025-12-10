@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, String, Integer, Text, Numeric, ForeignKey, func, CheckConstraint
+from sqlalchemy import Column, DateTime, String, Integer, Text, Numeric, ForeignKey, func, CheckConstraint, Enum
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -7,47 +7,31 @@ Base = declarative_base()
 metadata = Base.metadata
 
 class User(Base):
-    """
-    Tabel Users:
-    - Admin: Pengelola yang membuat Event.
-    - Customer: Pengguna yang membeli tiket (Booking).
-    """
+    """Tabel Users: Admin & Customer"""
     __tablename__ = 'users'
     
-    # CONSTRAINT: Role hanya boleh 'Customer' atau 'Admin'
     __table_args__ = (
-        CheckConstraint(
-            "role IN ('Customer', 'Admin')", 
-            name='check_user_role'
-        ),
+        CheckConstraint("role IN ('Customer', 'Admin')", name='check_user_role'),
     )
     
-    # Kolom Dasar
     id = Column(Integer, primary_key=True)
     name = Column(String(100), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
     password = Column(String(255), nullable=False)
-    role = Column(String(20), nullable=False) # 'Customer' atau 'Admin'
+    role = Column(String(20), nullable=False)
     
-    # Relasi ORM
-    # Jika user adalah Admin, dia punya banyak event yang dikelola
     admin_events = relationship("Event", back_populates="admin")
-    
-    # Jika user adalah Customer, dia punya banyak booking
     bookings = relationship("Booking", back_populates="customer")
 
     def __repr__(self):
-        return f"<User id={self.id}, email={self.email}, role={self.role}>"
+        return f"<User {self.name} ({self.role})>"
 
 
 class Event(Base):
-    """Tabel Events: Data Event yang dibuat oleh Admin"""
+    """Tabel Events"""
     __tablename__ = 'events'
     
-    # Kolom Dasar
     id = Column(Integer, primary_key=True)
-    
-    # GANTI: organizer_id -> admin_id
     admin_id = Column(Integer, ForeignKey('users.id'), nullable=False) 
     
     name = Column(String(255), nullable=False)
@@ -57,26 +41,19 @@ class Event(Base):
     capacity = Column(Integer, nullable=False)
     ticket_price = Column(Numeric(10, 2), nullable=False)
     
-    # Relasi ORM
-    # Event dimiliki oleh satu User (Admin)
     admin = relationship("User", back_populates="admin_events")
-    
-    # Event punya banyak Bookings
     bookings = relationship("Booking", back_populates="event")
 
     def __repr__(self):
-        return f"<Event id={self.id}, name={self.name}, date={self.date}>"
+        return f"<Event {self.name}>"
 
 
 class Booking(Base):
-    """Tabel Bookings: Data Pemesanan Tiket oleh Customer"""
+    """Tabel Bookings: Status default 'Pending'"""
     __tablename__ = 'bookings'
     
-    # Kolom Dasar
     id = Column(Integer, primary_key=True)
     event_id = Column(Integer, ForeignKey('events.id'), nullable=False)
-    
-    # GANTI: attendee_id -> customer_id
     customer_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     
     quantity = Column(Integer, nullable=False)
@@ -84,12 +61,35 @@ class Booking(Base):
     booking_code = Column(String(50), unique=True, nullable=False)
     booking_date = Column(DateTime, default=func.now())
     
-    # Relasi ORM
-    # Booking terkait ke satu Event
+    # KOLOM BARU: Status Booking
+    status = Column(String(20), default='Pending', nullable=False) 
+    # Nilai: 'Pending', 'Confirmed', 'Cancelled'
+
     event = relationship("Event", back_populates="bookings")
-    
-    # Booking dimiliki oleh satu User (Customer)
     customer = relationship("User", back_populates="bookings")
+    
+    # Relasi ke Payment (One-to-One)
+    payment = relationship("Payment", back_populates="booking", uselist=False)
 
     def __repr__(self):
-        return f"<Booking id={self.id}, code={self.booking_code}, quantity={self.quantity}>"
+        return f"<Booking {self.booking_code}: {self.status}>"
+
+
+class Payment(Base):
+    """Tabel Payments: Menyimpan riwayat pembayaran"""
+    __tablename__ = 'payments'
+
+    id = Column(Integer, primary_key=True)
+    booking_id = Column(Integer, ForeignKey('bookings.id'), unique=True, nullable=False)
+    
+    amount = Column(Numeric(10, 2), nullable=False)
+    payment_method = Column(String(50), nullable=False) # misal: 'Transfer', 'Credit Card'
+    payment_date = Column(DateTime, default=func.now())
+    
+    # Status Pembayaran: 'Success', 'Failed'
+    status = Column(String(20), default='Success', nullable=False)
+
+    booking = relationship("Booking", back_populates="payment")
+
+    def __repr__(self):
+        return f"<Payment for {self.booking_id}: {self.amount}>"
