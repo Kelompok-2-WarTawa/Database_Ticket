@@ -1,8 +1,8 @@
-"""add ticketing data model
+"""Refactor roles to Admin and Customer
 
-Revision ID: f8b1c49fb738
+Revision ID: 3f5ddf88197d
 Revises: 
-Create Date: 2025-12-10 15:10:45.893272
+Create Date: 2025-12-11 00:31:31.451528
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'f8b1c49fb738'
+revision: str = '3f5ddf88197d'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -27,30 +27,31 @@ def upgrade() -> None:
     sa.Column('email', sa.String(length=100), nullable=False),
     sa.Column('password', sa.String(length=255), nullable=False),
     sa.Column('role', sa.String(length=20), nullable=False),
+    sa.CheckConstraint("role IN ('Customer', 'Admin')", name='check_user_role'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('email')
     )
     op.create_table('events',
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('organizer_id', sa.Integer(), nullable=False),
+    sa.Column('admin_id', sa.Integer(), nullable=False),
     sa.Column('name', sa.String(length=255), nullable=False),
     sa.Column('description', sa.Text(), nullable=True),
     sa.Column('date', sa.DateTime(), nullable=False),
     sa.Column('venue', sa.String(length=255), nullable=False),
     sa.Column('capacity', sa.Integer(), nullable=False),
     sa.Column('ticket_price', sa.Numeric(precision=10, scale=2), nullable=False),
-    sa.ForeignKeyConstraint(['organizer_id'], ['users.id'], ),
+    sa.ForeignKeyConstraint(['admin_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_table('bookings',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('event_id', sa.Integer(), nullable=False),
-    sa.Column('attendee_id', sa.Integer(), nullable=False),
+    sa.Column('customer_id', sa.Integer(), nullable=False),
     sa.Column('quantity', sa.Integer(), nullable=False),
     sa.Column('total_price', sa.Numeric(precision=10, scale=2), nullable=False),
     sa.Column('booking_code', sa.String(length=50), nullable=False),
     sa.Column('booking_date', sa.DateTime(), nullable=True),
-    sa.ForeignKeyConstraint(['attendee_id'], ['users.id'], ),
+    sa.ForeignKeyConstraint(['customer_id'], ['users.id'], ),
     sa.ForeignKeyConstraint(['event_id'], ['events.id'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('booking_code')
