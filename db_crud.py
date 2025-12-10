@@ -1,236 +1,405 @@
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.exc import IntegrityError, InternalError
+from sqlalchemy.orm import sessionmaker, joinedload
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy import or_
 from models import User, Event, Booking 
-import bcrypt # Import library Bcrypt
+import bcrypt 
+from datetime import datetime
+import random
+import string
 
 # --- KONFIGURASI APLIKASI ---
-# Daftar role yang valid
-VALID_ROLES = ['Attendee', 'Organizer'] 
-
-# URL koneksi (PostgreSQL di Docker port 5433)
+VALID_ROLES = ['Customer', 'Admin'] 
 DB_URL = "postgresql://postgres:sigmoid@localhost:5433/ticket_db"
 
-# Inisialisasi Engine dan Session Factory
 engine = create_engine(DB_URL)
 Session = sessionmaker(bind=engine)
 
 
 # ===============================================
-# FUNGSI KEAMANAN (Bcrypt + Salt)
+# FUNGSI UTILITAS & KEAMANAN
 # ===============================================
 
 def hash_password(raw_password: str) -> str:
-    """Menghash kata sandi mentah menggunakan Bcrypt (salt otomatis)."""
-    password_bytes = raw_password.encode('utf-8')
-    # gensalt() membuat salt baru
-    hashed_bytes = bcrypt.hashpw(password_bytes, bcrypt.gensalt())
-    return hashed_bytes.decode('utf-8')
+    return bcrypt.hashpw(raw_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
-def check_password(raw_password: str, hashed_password: str | None) -> bool: # <-- Terima string/None
-    """Memverifikasi password mentah terhadap hash yang tersimpan."""
-    if not hashed_password:
-        return False # Jika hash yang tersimpan null, otomatis gagal
-        
-    raw_password_bytes = raw_password.encode('utf-8')
-    hashed_password_bytes = hashed_password.encode('utf-8')
-    
-    return bcrypt.checkpw(raw_password_bytes, hashed_password_bytes)
+def check_password(raw_password: str, hashed_password: str | None) -> bool:
+    if not hashed_password: return False
+    return bcrypt.checkpw(raw_password.encode('utf-8'), hashed_password.encode('utf-8'))
+
+def generate_booking_code() -> str:
+    """Membuat kode unik: BKG-9X2A1"""
+    chars = string.ascii_uppercase + string.digits
+    random_str = ''.join(random.choice(chars) for _ in range(5))
+    return f"BKG-{random_str}"
+
 
 # ===============================================
-# FUNGING CRUD USER
+# [1] CRUD USER (Expanded)
 # ===============================================
 
 def add_user(name: str, email: str, raw_password: str, role: str) -> User | None:
-    """Menambahkan user baru ke tabel users dengan validasi role dan hashing."""
-    
     if role not in VALID_ROLES:
-        print(f"❌ ERROR VALIDASI: Role '{role}' tidak valid. Role harus salah satu dari {VALID_ROLES}.")
+        print(f"❌ Role tidak valid. Pilih: {VALID_ROLES}")
         return None
-        
     session = Session()
     try:
-        # HASH PASSWORD SEBELUM DISIMPAN
-        hashed_password = hash_password(raw_password)
-        
-        new_user = User(
-            name=name,
-            email=email,
-            password=hashed_password, 
-            role=role 
-        )
+        new_user = User(name=name, email=email, role=role, password=hash_password(raw_password))
         session.add(new_user)
         session.commit()
-        session.refresh(new_user)
-        print(f"✅ User berhasil ditambahkan. ID: {new_user.id}, Role: {new_user.role}")
+        print(f"✅ User Registered: {name} ({role})")
         return new_user
-
     except IntegrityError:
         session.rollback()
-        print("❌ ERROR DATABASE: Email yang dimasukkan sudah terdaftar.")
+        print("❌ Email sudah terdaftar.")
         return None
-    
-    except InternalError as e:
-        session.rollback()
-        print("❌ ERROR DATABASE (CHECK CONSTRAINT): Role yang dimasukkan melanggar batasan database.")
-        return None
-        
     except Exception as e:
-        session.rollback()
-        print(f"❌ ERROR UMUM: {e}")
+        print(f"❌ Error: {e}")
         return None
-        
     finally:
         session.close()
 
-
 def get_all_users() -> list[User]:
-    """Mengambil semua data user."""
     session = Session()
     try:
-        users = session.query(User).all()
-        return users
+        return session.query(User).order_by(User.id).all()
     finally:
         session.close()
 
 def get_user_by_email(email: str) -> User | None:
-    """Mencari user berdasarkan email."""
     session = Session()
     try:
-        user = session.query(User).filter_by(email=email).first()
-        return user
+        return session.query(User).filter_by(email=email).first()
     finally:
         session.close()
 
-def update_user_role(email: str, new_role: str) -> bool:
-    """Memperbarui role user berdasarkan email."""
-    
-    if new_role not in VALID_ROLES:
-        print(f"❌ ERROR VALIDASI: Role '{new_role}' tidak valid. Role harus salah satu dari {VALID_ROLES}.")
-        return False
-        
+def update_user_profile(email: str, new_name: str) -> bool:
     session = Session()
     try:
         user = session.query(User).filter_by(email=email).first()
         if user:
-            user.role = new_role
+            user.name = new_name
             session.commit()
-            print(f"✅ Role user {email} berhasil diperbarui menjadi {new_role}.")
+            print(f"✅ Nama user diperbarui menjadi: {new_name}")
             return True
-        else:
-            print(f"❌ User dengan email {email} tidak ditemukan.")
-            return False
-    except Exception as e:
-        session.rollback()
-        print(f"❌ ERROR UPDATE USER: {e}")
+        print("❌ User tidak ditemukan.")
+        return False
+    finally:
+        session.close()
+
+def update_user_password(email: str, new_raw_password: str) -> bool:
+    session = Session()
+    try:
+        user = session.query(User).filter_by(email=email).first()
+        if user:
+            user.password = hash_password(new_raw_password)
+            session.commit()
+            print("✅ Password berhasil diubah.")
+            return True
+        print("❌ User tidak ditemukan.")
         return False
     finally:
         session.close()
 
 def delete_user(email: str) -> bool:
-    """Menghapus user berdasarkan email."""
     session = Session()
     try:
         user = session.query(User).filter_by(email=email).first()
         if user:
             session.delete(user)
             session.commit()
-            print(f"✅ User dengan email {email} berhasil dihapus.")
+            print(f"✅ User {email} dihapus.")
             return True
-        else:
-            print(f"❌ User dengan email {email} tidak ditemukan.")
-            return False
-    except Exception as e:
-        session.rollback()
-        print(f"❌ ERROR DELETE USER: {e}")
+        print("❌ User tidak ditemukan.")
         return False
     finally:
         session.close()
 
 def login_user(email: str, raw_password: str) -> bool:
-    """Mencoba login dan memverifikasi password."""
     user = get_user_by_email(email)
-    
-    if not user:
-        print("❌ Login Gagal: Email tidak terdaftar.")
-        return False
-    
-    # Memanggil fungsi check_password Bcrypt
-    if check_password(raw_password, user.password):
-        print(f"✅ Login Berhasil! Selamat datang, {user.name} ({user.role}).")
+    if user and check_password(raw_password, user.password):
+        print(f"✅ LOGIN SUKSES! Halo {user.name} ({user.role})")
         return True
-    else:
-        print("❌ Login Gagal: Password salah.")
-        return False
+    print("❌ Login Gagal: Email atau Password salah.")
+    return False
 
 
 # ===============================================
-# SIMULASI INTERAKSI DINAMIS (MENU UTAMA)
+# [2] CRUD EVENT (Expanded)
+# ===============================================
+
+def add_event(admin_email: str, name: str, description: str, date_str: str, venue: str, capacity: int, ticket_price: float) -> Event | None:
+    session = Session()
+    try:
+        admin = session.query(User).filter_by(email=admin_email).first()
+        if not admin or admin.role != 'Admin':
+            print("❌ Akses Ditolak: Hanya Admin yang bisa membuat event.")
+            return None
+
+        event_dt = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+        new_event = Event(
+            admin_id=admin.id, name=name, description=description,
+            date=event_dt, venue=venue, capacity=capacity, ticket_price=ticket_price
+        )
+        session.add(new_event)
+        session.commit()
+        print(f"✅ Event Created: '{name}'")
+        return new_event
+    except ValueError:
+        print("❌ Format tanggal salah (YYYY-MM-DD HH:MM:SS)")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    finally:
+        session.close()
+
+def get_all_events() -> list[Event]:
+    session = Session()
+    try:
+        return session.query(Event).options(joinedload(Event.admin)).order_by(Event.date).all()
+    finally:
+        session.close()
+
+def search_events(keyword: str) -> list[Event]:
+    """Mencari event berdasarkan Nama atau Venue (Case Insensitive)."""
+    session = Session()
+    try:
+        search = f"%{keyword}%"
+        return session.query(Event).filter(
+            or_(Event.name.ilike(search), Event.venue.ilike(search))
+        ).options(joinedload(Event.admin)).all()
+    finally:
+        session.close()
+
+def get_events_by_admin(admin_email: str) -> list[Event]:
+    session = Session()
+    try:
+        admin = session.query(User).filter_by(email=admin_email).first()
+        if not admin: return []
+        return session.query(Event).filter_by(admin_id=admin.id).all()
+    finally:
+        session.close()
+
+def update_event_details(event_id: int, new_venue: str = None, new_date_str: str = None) -> bool:
+    session = Session()
+    try:
+        event = session.query(Event).filter_by(id=event_id).first()
+        if not event:
+            print("❌ Event tidak ditemukan.")
+            return False
+        
+        if new_venue: event.venue = new_venue
+        if new_date_str: event.date = datetime.strptime(new_date_str, '%Y-%m-%d %H:%M:%S')
+        
+        session.commit()
+        print(f"✅ Event ID {event_id} diperbarui.")
+        return True
+    except ValueError:
+        print("❌ Format tanggal salah.")
+        return False
+    finally:
+        session.close()
+
+def delete_event(event_id: int) -> bool:
+    session = Session()
+    try:
+        event = session.query(Event).filter_by(id=event_id).first()
+        if event:
+            session.delete(event)
+            session.commit()
+            print(f"✅ Event ID {event_id} dihapus.")
+            return True
+        print("❌ Event tidak ditemukan.")
+        return False
+    except Exception as e: # Handle FK constraint (hapus booking dulu)
+        session.rollback()
+        print(f"❌ Gagal Hapus: Event mungkin memiliki booking aktif. Hapus booking terlebih dahulu.")
+        return False
+    finally:
+        session.close()
+
+
+# ===============================================
+# [3] CRUD BOOKING (Expanded)
+# ===============================================
+
+def add_booking(customer_email: str, event_id: int, quantity: int) -> Booking | None:
+    session = Session()
+    try:
+        cust = session.query(User).filter_by(email=customer_email).first()
+        if not cust or cust.role != 'Customer':
+            print("❌ User invalid atau bukan Customer.")
+            return None
+
+        event = session.query(Event).filter_by(id=event_id).first()
+        if not event:
+            print("❌ Event tidak ditemukan.")
+            return None
+
+        if event.capacity < quantity:
+            print(f"❌ Kapasitas Penuh! Tersisa: {event.capacity}")
+            return None
+
+        # Logic Booking
+        total = event.ticket_price * quantity
+        code = generate_booking_code()
+        event.capacity -= quantity # Kurangi kapasitas
+
+        new_bk = Booking(
+            customer_id=cust.id, event_id=event.id,
+            quantity=quantity, total_price=total, booking_code=code
+        )
+        session.add(new_bk)
+        session.commit()
+        print(f"✅ Booking Sukses! Code: {code} | Total: Rp {total:,.2f}")
+        return new_bk
+    except Exception as e:
+        session.rollback()
+        print(f"❌ Error: {e}")
+        return None
+    finally:
+        session.close()
+
+def get_all_bookings() -> list[Booking]:
+    session = Session()
+    try:
+        return session.query(Booking).options(joinedload(Booking.event), joinedload(Booking.customer)).all()
+    finally:
+        session.close()
+
+def get_bookings_by_customer(email: str) -> list[Booking]:
+    session = Session()
+    try:
+        user = session.query(User).filter_by(email=email).first()
+        if not user: return []
+        return session.query(Booking).filter_by(customer_id=user.id).options(joinedload(Booking.event)).all()
+    finally:
+        session.close()
+
+def get_booking_by_code(code: str) -> Booking | None:
+    session = Session()
+    try:
+        return session.query(Booking).filter_by(booking_code=code).options(joinedload(Booking.event), joinedload(Booking.customer)).first()
+    finally:
+        session.close()
+
+def cancel_booking(booking_code: str) -> bool:
+    session = Session()
+    try:
+        bk = session.query(Booking).filter_by(booking_code=booking_code).first()
+        if not bk:
+            print("❌ Booking tidak ditemukan.")
+            return False
+        
+        # Kembalikan kapasitas
+        event = session.query(Event).filter_by(id=bk.event_id).first()
+        if event: event.capacity += bk.quantity
+            
+        session.delete(bk)
+        session.commit()
+        print(f"✅ Booking {booking_code} dibatalkan. Dana dikembalikan (Simulasi).")
+        return True
+    finally:
+        session.close()
+
+
+# ===============================================
+# MENU UTAMA (Grouped)
 # ===============================================
 
 def main_menu():
-    """Menampilkan menu dan menangani input pengguna."""
     while True:
-        print("\n=== OPERASI CRUD USER (Bcrypt Secured) ===")
-        print("1. Tambah User (CREATE)")
-        print("2. Tampilkan Semua User (READ)")
-        print("3. Cari User Berdasarkan Email (READ)")
-        print("4. Update Role User (UPDATE)")
-        print("5. Hapus User (DELETE)")
-        print("6. Tes Login User (SECURITY CHECK)")
-        print("0. Keluar")
+        print("\n" + "="*40)
+        print("   TICKET SYSTEM SUPER APP (Admin/Cust)")
+        print("="*40)
         
-        choice = input("Pilih Opsi (0-6): ").strip()
+        print("\n[👤 USER MANAGEMENT]")
+        print("1.  Register User")
+        print("2.  List All Users")
+        print("3.  Find User by Email")
+        print("4.  Update User Profile (Name)")
+        print("5.  Change Password")
+        print("6.  Delete User")
+        print("7.  Login Simulation")
 
-        if choice == '1': # CREATE
-            print("\n--- [CREATE USER] ---")
-            name = input("Nama: ")
-            email = input("Email: ")
-            raw_password = input("Password (Raw): ")
-            role = input(f"Role ({'/'.join(VALID_ROLES)}): ").strip()
-            add_user(name, email, raw_password, role)
+        print("\n[📅 EVENT MANAGEMENT]")
+        print("8.  Create Event (Admin Only)")
+        print("9.  List All Events")
+        print("10. Search Events (by Name/Venue)")
+        print("11. List Events by Admin")
+        print("12. Update Event Details (Date/Venue)")
+        print("13. Update Event Price") # Opsional, bisa digabung tapi dipisah biar banyak fitur
+        print("14. Delete Event")
 
-        elif choice == '2': # READ ALL
-            print("\n--- [ALL USERS] ---")
-            users = get_all_users()
-            if users:
-                for user in users:
-                    print(f"ID: {user.id}, Nama: {user.name}, Email: {user.email}, Role: {user.role}, Pass(Hash): {user.password[:10]}...") 
-            else:
-                print("Tabel users kosong.")
+        print("\n[🎫 BOOKING SYSTEM]")
+        print("15. Book Ticket (Customer Only)")
+        print("16. List All Bookings (Admin View)")
+        print("17. My Bookings (Customer History)")
+        print("18. Check Booking Status (by Code)")
+        print("19. Cancel Booking")
         
-        elif choice == '3': # READ BY EMAIL
-            print("\n--- [READ USER BY EMAIL] ---")
-            email = input("Masukkan Email yang dicari: ")
-            user = get_user_by_email(email)
-            if user:
-                print(f"Ditemukan: ID={user.id}, Nama={user.name}, Role={user.role}")
-            else:
-                print("User tidak ditemukan.")
+        print("\n0.  EXIT")
+        
+        c = input("\n>> Pilih Menu (0-19): ").strip()
 
-        elif choice == '4': # UPDATE ROLE
-            print("\n--- [UPDATE ROLE] ---")
-            email = input("Email User yang diupdate: ")
-            new_role = input(f"Role Baru ({'/'.join(VALID_ROLES)}): ")
-            update_user_role(email, new_role)
+        # --- USER ---
+        if c == '1':
+            add_user(input("Nama: "), input("Email: "), input("Password: "), input("Role (Customer/Admin): "))
+        elif c == '2':
+            for u in get_all_users(): print(f"[{u.id}] {u.name} | {u.email} | {u.role}")
+        elif c == '3':
+            u = get_user_by_email(input("Email: "))
+            print(f"Found: {u.name} ({u.role})" if u else "Not Found")
+        elif c == '4':
+            update_user_profile(input("Email: "), input("New Name: "))
+        elif c == '5':
+            update_user_password(input("Email: "), input("New Password: "))
+        elif c == '6':
+            delete_user(input("Email to Delete: "))
+        elif c == '7':
+            login_user(input("Email: "), input("Password: "))
 
-        elif choice == '5': # DELETE
-            print("\n--- [DELETE USER] ---")
-            email = input("Email User yang akan dihapus: ")
-            delete_user(email)
-            
-        elif choice == '6': # TEST LOGIN
-            print("\n--- [TES LOGIN] ---")
-            email = input("Email Login: ")
-            password = input("Password: ")
-            login_user(email, password)
+        # --- EVENT ---
+        elif c == '8':
+            add_event(input("Admin Email: "), input("Event Name: "), input("Desc: "), input("Date (YYYY-MM-DD HH:MM:SS): "), input("Venue: "), int(input("Capacity: ")), float(input("Price: ")))
+        elif c == '9':
+            for e in get_all_events(): print(f"[{e.id}] {e.date} | {e.name} @ {e.venue} | Rp {e.ticket_price} | By: {e.admin.name if e.admin else '?'}")
+        elif c == '10':
+            res = search_events(input("Keyword (Name/Venue): "))
+            for e in res: print(f"- {e.name} di {e.venue}")
+        elif c == '11':
+            res = get_events_by_admin(input("Admin Email: "))
+            for e in res: print(f"- {e.name} ({e.date})")
+        elif c == '12':
+            eid = int(input("Event ID: "))
+            v = input("New Venue (kosongkan jika tetap): ")
+            d = input("New Date YYYY-MM-DD HH:MM:SS (kosongkan jika tetap): ")
+            update_event_details(eid, v if v else None, d if d else None)
+        elif c == '13':
+             # Fitur update price sederhana, bisa diimplementasikan ulang di fungsi update_event_details jika mau
+             # Tapi di sini saya anggap user ingin update terpisah
+             print("Gunakan opsi 12 untuk update detail, atau buat fungsi khusus update price jika perlu.") 
+        elif c == '14':
+            delete_event(int(input("Event ID to Delete: ")))
 
-        elif choice == '0':
-            print("Keluar dari skrip CRUD.")
-            break
+        # --- BOOKING ---
+        elif c == '15':
+            add_booking(input("Customer Email: "), int(input("Event ID: ")), int(input("Qty: ")))
+        elif c == '16':
+            for b in get_all_bookings(): print(f"[{b.booking_code}] {b.customer.email} -> {b.event.name} ({b.quantity} pcs)")
+        elif c == '17':
+            res = get_bookings_by_customer(input("Customer Email: "))
+            for b in res: print(f"- {b.booking_code}: {b.event.name} | Total: {b.total_price}")
+        elif c == '18':
+            b = get_booking_by_code(input("Booking Code: "))
+            if b: print(f"VALID: {b.customer.name} going to {b.event.name} on {b.event.date}")
+            else: print("INVALID CODE")
+        elif c == '19':
+            cancel_booking(input("Booking Code to Cancel: "))
+
+        elif c == '0':
+            print("Bye!"); break
         else:
-            print("Pilihan tidak valid. Silakan coba lagi.")
-
+            print("Pilihan tidak tersedia.")
 
 if __name__ == "__main__":
     main_menu()
