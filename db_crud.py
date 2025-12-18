@@ -1,54 +1,36 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker, joinedload
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import or_
-from models import User, Event, Booking, Payment
+from models import User, Event, Booking, Payment, Seat
 import bcrypt 
 from datetime import datetime
 import random
 import string
 
-# --- KONFIGURASI APLIKASI ---
+# --- KONFIGURASI ---
 VALID_ROLES = ['Customer', 'Admin'] 
 DB_URL = "postgresql://postgres:sigmoid@localhost:5433/ticket_db"
 
 engine = create_engine(DB_URL)
 Session = sessionmaker(bind=engine)
 
-
 # ===============================================
-# [0] UTILITAS & KEAMANAN
+# [0] UTILITAS & AUTH
 # ===============================================
+def hash_password(raw: str) -> str:
+    return bcrypt.hashpw(raw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
-def hash_password(raw_password: str) -> str:
-    return bcrypt.hashpw(raw_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-def check_password(raw_password: str, hashed_password: str | None) -> bool:
-    if not hashed_password: return False
-    return bcrypt.checkpw(raw_password.encode('utf-8'), hashed_password.encode('utf-8'))
+def check_password(raw: str, hashed: str | None) -> bool:
+    if not hashed: return False
+    return bcrypt.checkpw(raw.encode('utf-8'), hashed.encode('utf-8'))
 
 def generate_booking_code() -> str:
-    chars = string.ascii_uppercase + string.digits
-    return f"BKG-{''.join(random.choice(chars) for _ in range(5))}"
+    return f"BKG-{ ''.join(random.choices(string.ascii_uppercase + string.digits, k=6)) }"
 
-# --- HELPER INPUT (Anti-Crash) ---
-def get_valid_int(prompt: str) -> int:
+def get_input(prompt, type_func=str):
     while True:
-        try: return int(input(prompt).strip())
-        except ValueError: print("❌ Input harus ANGKA BULAT.")
-
-def get_valid_float(prompt: str) -> float:
-    while True:
-        try: return float(input(prompt).strip())
-        except ValueError: print("❌ Input harus ANGKA (Bisa desimal).")
-
-def get_valid_date(prompt: str) -> str:
-    while True:
-        v = input(prompt).strip()
-        try:
-            datetime.strptime(v, '%Y-%m-%d %H:%M:%S')
-            return v
-        except ValueError: print("❌ Format Salah! Gunakan: YYYY-MM-DD HH:MM:SS")
+        try: return type_func(input(prompt).strip())
+        except ValueError: print(f"❌ Input salah. Harap masukkan {type_func.__name__}.")
 
 def authenticate_admin() -> User | None:
     print("\n🔒 AKSES ADMIN DIPERLUKAN")
@@ -60,54 +42,46 @@ def authenticate_admin() -> User | None:
         if user and user.role == 'Admin' and check_password(pwd, user.password):
             print(f"✅ Akses Diberikan. Halo {user.name}.")
             return user
-        print("❌ AKSES DITOLAK.")
+        print("❌ Login Gagal / Bukan Admin.")
         return None
     finally:
         session.close()
 
-
 # ===============================================
-# [1] CRUD USER
+# [1] CRUD USER (LENGKAP)
 # ===============================================
-
-def add_user(name: str, email: str, raw_password: str, role: str) -> User | None:
-    if role not in VALID_ROLES:
-        print(f"❌ Role tidak valid. Pilih: {VALID_ROLES}")
-        return None
+def register_user(name, email, pwd, role, phone):
     session = Session()
     try:
-        new_user = User(name=name, email=email, role=role, password=hash_password(raw_password))
-        session.add(new_user)
+        if role not in VALID_ROLES: raise ValueError("Role tidak valid")
+        u = User(name=name, email=email, role=role, password=hash_password(pwd), phone_number=phone)
+        session.add(u)
         session.commit()
-        print(f"✅ User Registered: {name} ({role})")
-        return new_user
+        print(f"✅ User {name} (Telp: {phone}) berhasil didaftarkan!")
     except IntegrityError:
-        session.rollback()
-        print("❌ Email sudah terdaftar.")
-        return None
-    finally:
-        session.close()
-
-def get_all_users() -> list[User]:
-    session = Session()
-    try: return session.query(User).order_by(User.id).all()
+        session.rollback(); print("❌ Email sudah terdaftar.")
+    except Exception as e:
+        session.rollback(); print(f"❌ Error: {e}")
     finally: session.close()
 
-def update_user_password(email: str, new_raw_password: str) -> bool:
+def list_users():
     session = Session()
-    try:
-        user = session.query(User).filter_by(email=email).first()
-        if user:
-            user.password = hash_password(new_raw_password)
-            session.commit()
-            print("✅ Password berhasil diubah.")
-            return True
-        print("❌ User tidak ditemukan.")
-        return False
-    finally:
-        session.close()
+    print("\n--- DAFTAR PENGGUNA ---")
+    for u in session.query(User).order_by(User.id).all(): 
+        print(f"[{u.id}] {u.name} ({u.role}) | 📞 {u.phone_number or '-'} | ✉️ {u.email}")
+    session.close()
 
-def delete_user(email: str) -> bool:
+def update_user_password(email, new_pass):
+    session = Session()
+    user = session.query(User).filter_by(email=email).first()
+    if user:
+        user.password = hash_password(new_pass)
+        session.commit()
+        print("✅ Password berhasil diubah.")
+    else: print("❌ User tidak ditemukan.")
+    session.close()
+
+def delete_user(email):
     session = Session()
     try:
         user = session.query(User).filter_by(email=email).first()
@@ -115,348 +89,319 @@ def delete_user(email: str) -> bool:
             session.delete(user)
             session.commit()
             print(f"✅ User {email} dihapus.")
-            return True
-        print("❌ User tidak ditemukan.")
-        return False
+        else: print("❌ User tidak ditemukan.")
     except Exception as e:
-        session.rollback()
-        print(f"❌ Gagal Hapus: {e}")
-        return False
-    finally:
-        session.close()
-
+        session.rollback(); print(f"❌ Gagal hapus (Mungkin ada data terkait): {e}")
+    finally: session.close()
 
 # ===============================================
-# [2] CRUD EVENT
+# [2] CRUD EVENT & SEAT (LENGKAP)
 # ===============================================
-
-def add_event(admin_user: User, name: str, description: str, date_str: str, venue: str, capacity: int, ticket_price: float) -> Event | None:
+def create_event(admin_user):
+    print("\n--- BUAT EVENT BARU ---")
+    name = get_input("Nama Event: ")
+    desc = get_input("Deskripsi: ")
+    date_str = get_input("Tanggal (YYYY-MM-DD HH:MM:SS): ")
+    venue = get_input("Lokasi: ")
+    capacity = get_input("Total Kapasitas: ", int)
+    price = get_input("Harga Tiket: ", float)
+    
     session = Session()
     try:
-        new_event = Event(
-            admin_id=admin_user.id, name=name, description=description,
+        event = Event(
+            admin_id=admin_user.id, name=name, description=desc,
             date=datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S'),
-            venue=venue, capacity=capacity, ticket_price=ticket_price
+            venue=venue, total_capacity=capacity, ticket_price=price
         )
-        session.add(new_event)
+        session.add(event)
         session.commit()
-        print(f"✅ Event Created: '{name}'")
-        return new_event
-    except Exception as e:
-        session.rollback()
-        print(f"❌ Error: {e}")
-        return None
-    finally:
-        session.close()
-
-def get_all_events() -> list[Event]:
-    session = Session()
-    try: return session.query(Event).options(joinedload(Event.admin)).order_by(Event.date).all()
-    finally: session.close()
-
-def update_event_price(event_id: int, new_price: float) -> bool:
-    session = Session()
-    try:
-        event = session.query(Event).filter_by(id=event_id).first()
-        if event:
-            event.ticket_price = new_price
-            session.commit()
-            print(f"✅ Harga Event ID {event_id} diupdate jadi Rp {new_price}")
-            return True
-        print("❌ Event tidak ditemukan.")
-        return False
-    finally:
-        session.close()
-
-def delete_event(event_id: int) -> bool:
-    session = Session()
-    try:
-        event = session.query(Event).filter_by(id=event_id).first()
-        if event:
-            session.delete(event)
-            session.commit()
-            print(f"✅ Event ID {event_id} dihapus.")
-            return True
-        print("❌ Event tidak ditemukan.")
-        return False
-    except IntegrityError:
-        session.rollback()
-        print("❌ Gagal: Event sudah ada bookingnya. Hapus booking dulu.")
-        return False
-    finally:
-        session.close()
-
-
-# ===============================================
-# [3] CRUD BOOKING
-# ===============================================
-
-def add_booking(customer_email: str, event_id: int, quantity: int) -> Booking | None:
-    session = Session()
-    try:
-        cust = session.query(User).filter_by(email=customer_email).first()
-        if not cust or cust.role != 'Customer':
-            print("❌ User invalid atau bukan Customer.")
-            return None
-
-        event = session.query(Event).filter_by(id=event_id).first()
-        if not event:
-            print("❌ Event tidak ditemukan.")
-            return None
-
-        if event.capacity < quantity:
-            print(f"❌ Kapasitas Penuh! Tersisa: {event.capacity}")
-            return None
-
-        total = event.ticket_price * quantity
-        code = generate_booking_code()
+        print(f"✅ Event '{name}' dibuat! ID: {event.id}")
         
-        event.capacity -= quantity 
-
-        new_bk = Booking(
-            customer_id=cust.id, event_id=event.id,
-            quantity=quantity, total_price=total, booking_code=code,
-            status='Pending'
-        )
-        session.add(new_bk)
-        session.commit()
-        print(f"✅ Booking Berhasil! Kode: {code} | Total: Rp {total:,.2f}")
-        print("   Status: PENDING (Segera lakukan pembayaran)")
-        return new_bk
-    except Exception as e:
-        session.rollback()
-        print(f"❌ Error: {e}")
-        return None
-    finally:
-        session.close()
-
-def get_all_bookings() -> list[Booking]:
-    session = Session()
-    try: return session.query(Booking).options(joinedload(Booking.event), joinedload(Booking.customer)).all()
+        if input("Generate kursi otomatis? (y/n): ").lower() == 'y':
+            generate_seats(event.id, capacity)
+    except Exception as e: print(f"❌ Error: {e}")
     finally: session.close()
 
-def get_my_bookings(email: str) -> list[Booking]:
+def generate_seats(event_id, qty):
+    session = Session()
+    try:
+        event = session.query(Event).get(event_id)
+        if not event: return print("Event tidak ditemukan")
+
+        print("⏳ Sedang men-generate kursi...")
+        # Cek kursi terakhir untuk melanjutkan nomor
+        last_seat = session.query(Seat).filter_by(event_id=event_id).order_by(Seat.id.desc()).first()
+        start_num = 1
+        if last_seat:
+            # Simple logic: kalau S005, ambil 5.
+            try: start_num = int(last_seat.seat_label[1:]) + 1
+            except: pass
+
+        seats = []
+        for i in range(qty):
+            label = f"S{start_num + i:03d}" 
+            seats.append(Seat(event_id=event.id, seat_label=label, is_booked=False))
+        
+        session.add_all(seats)
+        session.commit()
+        print(f"✅ Berhasil menambah {qty} kursi ke Event '{event.name}'!")
+    except Exception as e: print(f"❌ Gagal: {e}")
+    finally: session.close()
+
+def list_events():
+    session = Session()
+    print("\n--- DAFTAR EVENT ---")
+    for e in session.query(Event).order_by(Event.date).all():
+        total = session.query(Seat).filter_by(event_id=e.id).count()
+        booked = session.query(Seat).filter_by(event_id=e.id, is_booked=True).count()
+        print(f"🎫 [{e.id}] {e.name} | {e.date}")
+        print(f"   💰 Rp {e.ticket_price:,.0f} | 💺 Kursi: {total-booked} / {total}")
+    session.close()
+
+def update_event_price(event_id, new_price):
+    session = Session()
+    e = session.query(Event).get(event_id)
+    if e:
+        e.ticket_price = new_price
+        session.commit()
+        print("✅ Harga diupdate.")
+    else: print("❌ Event tidak ditemukan.")
+    session.close()
+
+def delete_event(event_id):
+    session = Session()
+    try:
+        e = session.query(Event).get(event_id)
+        if e:
+            session.delete(e)
+            session.commit()
+            print("✅ Event dihapus.")
+        else: print("❌ Event tidak ditemukan.")
+    except Exception as e: session.rollback(); print(f"❌ Gagal: {e}")
+    finally: session.close()
+
+def view_seat_map(event_id):
+    session = Session()
+    seats = session.query(Seat).filter_by(event_id=event_id).order_by(Seat.seat_label).all()
+    if not seats: return print("❌ Tidak ada data kursi.")
+
+    print(f"\n--- PETA KURSI (Event ID: {event_id}) ---")
+    line = ""
+    for i, s in enumerate(seats):
+        status = "[X]" if s.is_booked else "[O]"
+        line += f"{s.seat_label}{status}  "
+        if (i + 1) % 5 == 0: 
+            print(line); line = ""
+    print(line)
+    session.close()
+
+# ===============================================
+# [3] BOOKING (LENGKAP)
+# ===============================================
+def create_booking_with_seats():
+    email = get_input("Email Customer: ")
+    event_id = get_input("ID Event: ", int)
+    qty = get_input("Jumlah Tiket: ", int)
+    
     session = Session()
     try:
         user = session.query(User).filter_by(email=email).first()
-        if not user: return []
-        return session.query(Booking).filter_by(customer_id=user.id).options(joinedload(Booking.event)).all()
-    finally:
-        session.close()
-
-def cancel_booking(booking_code: str) -> bool:
-    session = Session()
-    try:
-        bk = session.query(Booking).filter_by(booking_code=booking_code).first()
-        if not bk:
-            print("❌ Booking tidak ditemukan.")
-            return False
+        event = session.query(Event).get(event_id)
         
-        if bk.status == 'Confirmed':
-            print("⚠️ Booking sudah Confirmed. Hubungi Admin untuk refund.")
-            return False
-
-        event = session.query(Event).filter_by(id=bk.event_id).first()
-        if event: event.capacity += bk.quantity
-            
-        # Ganti status jadi Cancelled (Soft Delete)
-        bk.status = 'Cancelled'
-        session.commit()
-        print(f"✅ Booking {booking_code} status: CANCELLED. Kuota dikembalikan.")
-        return True
-    finally:
-        session.close()
-
-
-# ===============================================
-# [4] CRUD PAYMENT (New & Full)
-# ===============================================
-
-def make_payment(booking_code: str, amount: float, method: str) -> bool:
-    session = Session()
-    try:
-        bk = session.query(Booking).filter_by(booking_code=booking_code).first()
-        if not bk:
-            print("❌ Booking tidak ditemukan.")
-            return False
+        if not user or not event: return print("❌ User/Event invalid.")
         
-        if bk.status != 'Pending':
-            print(f"❌ Gagal Bayar: Status Booking saat ini adalah '{bk.status}'")
-            return False
-        
-        if amount < bk.total_price:
-            print(f"❌ Uang Kurang! Total: {bk.total_price}, Dibayar: {amount}")
-            return False
+        # Lock & Ambil Kursi
+        available_seats = session.query(Seat).filter_by(event_id=event.id, is_booked=False).limit(qty).with_for_update().all()
+        if len(available_seats) < qty: return print(f"❌ Kursi kurang! Sisa: {len(available_seats)}")
 
-        # Create Payment
-        new_pay = Payment(
-            booking_id=bk.id,
-            amount=amount,
-            payment_method=method,
-            status='Success'
-        )
-        session.add(new_pay)
+        total = event.ticket_price * qty
+        code = generate_booking_code()
         
-        # Update Booking Status
-        bk.status = 'Confirmed'
+        # Buat Booking
+        new_bk = Booking(customer_id=user.id, event_id=event.id, quantity=qty, total_price=total, booking_code=code, status='Pending')
+        session.add(new_bk)
+        session.flush()
+
+        # Update Kursi
+        seat_lbls = []
+        for s in available_seats:
+            s.is_booked = True; s.booking_id = new_bk.id
+            seat_lbls.append(s.seat_label)
         
         session.commit()
-        print(f"✅ PEMBAYARAN SUKSES! Booking {booking_code} -> CONFIRMED.")
-        return True
-    except Exception as e:
-        session.rollback()
-        print(f"❌ Error Payment: {e}")
-        return False
-    finally:
-        session.close()
-
-def get_all_payments() -> list[Payment]:
-    """Admin Only: Lihat semua transaksi masuk."""
-    session = Session()
-    try: return session.query(Payment).options(joinedload(Payment.booking)).all()
+        print(f"\n✅ BOOKING SUKSES! Kode: {code}")
+        print(f"   Kursi: {', '.join(seat_lbls)} | Total: Rp {total:,.0f}")
+    except Exception as e: session.rollback(); print(f"❌ Error: {e}")
     finally: session.close()
 
-def get_payment_detail(booking_code: str) -> Payment | None:
+def my_bookings(email):
     session = Session()
-    try:
-        bk = session.query(Booking).filter_by(booking_code=booking_code).first()
-        if not bk: return None
-        return session.query(Payment).filter_by(booking_id=bk.id).first()
-    finally:
-        session.close()
+    user = session.query(User).filter_by(email=email).first()
+    if not user: return print("User not found.")
+    
+    print(f"\n--- BOOKING SAYA ({user.name}) ---")
+    for b in session.query(Booking).filter_by(customer_id=user.id).options(joinedload(Booking.seats)).all():
+        seats = ", ".join([s.seat_label for s in b.seats])
+        print(f"🧾 {b.booking_code} | {b.status} | Kursi: {seats} | Rp {b.total_price:,.0f}")
+    session.close()
 
-def refund_payment(payment_id: int) -> bool:
-    """Admin Only: Simulasi Refund & Batalkan Booking Confirmed."""
+def get_all_bookings():
+    session = Session()
+    print("\n--- SEMUA BOOKING (ADMIN) ---")
+    for b in session.query(Booking).all():
+        print(f"{b.booking_code} | User: {b.customer_id} | Event: {b.event_id} | {b.status}")
+    session.close()
+
+def cancel_booking(code):
     session = Session()
     try:
-        pay = session.query(Payment).filter_by(id=payment_id).first()
-        if not pay:
-            print("❌ Payment ID tidak ditemukan.")
-            return False
+        bk = session.query(Booking).filter_by(booking_code=code).first()
+        if not bk or bk.status != 'Pending': return print("❌ Tidak bisa cancel.")
+
+        # Lepas Kursi
+        for s in session.query(Seat).filter_by(booking_id=bk.id).all():
+            s.is_booked = False; s.booking_id = None
         
-        # Ubah status payment
+        bk.status = 'Cancelled'
+        session.commit()
+        print(f"✅ Booking {code} DIBATALKAN.")
+    except Exception as e: session.rollback(); print(f"Error: {e}")
+    finally: session.close()
+
+# ===============================================
+# [4] PAYMENT (LENGKAP)
+# ===============================================
+def process_payment():
+    code = get_input("Kode Booking: ")
+    amt = get_input("Nominal: ", float)
+    method = get_input("Metode: ")
+    
+    session = Session()
+    try:
+        bk = session.query(Booking).filter_by(booking_code=code).first()
+        if not bk or bk.status != 'Pending': return print("❌ Invalid booking.")
+        if amt < bk.total_price: return print("❌ Uang kurang.")
+
+        pay = Payment(booking_id=bk.id, amount=amt, payment_method=method, status='Success')
+        session.add(pay)
+        bk.status = 'Confirmed'
+        session.commit()
+        print("✅ PEMBAYARAN BERHASIL!")
+    except Exception as e: session.rollback(); print(f"Error: {e}")
+    finally: session.close()
+
+def get_payment_detail(code):
+    session = Session()
+    bk = session.query(Booking).filter_by(booking_code=code).first()
+    if bk and bk.payment:
+        p = bk.payment
+        print(f"💰 ID: {p.id} | Tgl: {p.payment_date} | Rp {p.amount:,.0f} | Via: {p.payment_method}")
+    else: print("❌ Data pembayaran tidak ditemukan.")
+    session.close()
+
+def get_all_payments():
+    session = Session()
+    print("\n--- DATA KEUANGAN ---")
+    for p in session.query(Payment).all():
+        print(f"ID:{p.id} | Booking:{p.booking_id} | +Rp {p.amount:,.0f}")
+    session.close()
+
+def refund_payment(pay_id):
+    session = Session()
+    try:
+        pay = session.query(Payment).get(pay_id)
+        if not pay: return print("Payment not found.")
+        
         pay.status = 'Refunded'
-        
-        # Ubah status booking terkait
-        bk = session.query(Booking).filter_by(id=pay.booking_id).first()
+        bk = session.query(Booking).get(pay.booking_id)
         if bk:
             bk.status = 'Cancelled'
-            # Kembalikan kuota event
-            event = session.query(Event).filter_by(id=bk.event_id).first()
-            if event: event.capacity += bk.quantity
-
+            # Lepas kursi
+            for s in session.query(Seat).filter_by(booking_id=bk.id).all():
+                s.is_booked = False; s.booking_id = None
+        
         session.commit()
-        print(f"✅ REFUND BERHASIL (ID: {payment_id}). Booking dibatalkan.")
-        return True
-    finally:
-        session.close()
-
+        print(f"✅ Refund ID {pay_id} Berhasil. Booking dibatalkan & Kursi dikosongkan.")
+    except Exception as e: session.rollback(); print(f"Error: {e}")
+    finally: session.close()
 
 # ===============================================
-# MENU UTAMA (Ultimate)
+# MAIN MENU (ULTIMATE 20)
 # ===============================================
-
 def main_menu():
     while True:
-        print("\n" + "="*45)
-        print("   TICKET SYSTEM ULTIMATE (User/Event/Book/Pay)")
-        print("="*45)
+        print("\n" + "="*50)
+        print("   🎟️  SISTEM TIKET ULTIMATE (SEAT + PHONE)  🎟️")
+        print("="*50)
         
-        # --- USER ---
-        print("\n[👤 USER CRUD]")
-        print("1.  Create User (Register)")
-        print("2.  Read All Users")
-        print("3.  Update Password")
-        print("4.  Delete User")
+        print("[USER]")
+        print("1. Register User Baru (+No HP)")
+        print("2. Lihat Semua User")
+        print("3. Update Password")
+        print("4. Hapus User")
 
-        # --- EVENT ---
-        print("\n[📅 EVENT CRUD (Admin Auth)]")
-        print("5.  Create Event")
-        print("6.  Read All Events")
-        print("7.  Update Event Price")
-        print("8.  Delete Event")
+        print("\n[EVENT - ADMIN]")
+        print("5. Buat Event (+Auto Seats)")
+        print("6. Lihat Daftar Event & Kuota")
+        print("7. Update Harga Event")
+        print("8. Hapus Event")
+        print("9. Generate Kursi Tambahan")
+        print("10. Lihat Peta Kursi (Map)")
 
-        # --- BOOKING ---
-        print("\n[🎫 BOOKING CRUD]")
-        print("9.  Create Booking (Customer)")
-        print("10. Read My Bookings (Customer)")
-        print("11. Read All Bookings (Admin)")
-        print("12. Update/Cancel Booking (Pending Only)")
+        print("\n[BOOKING]")
+        print("11. Booking Tiket (Pilih Kursi)")
+        print("12. Cek Booking Saya")
+        print("13. Lihat Semua Booking (Admin)")
+        print("14. Cancel Booking (Pending)")
+
+        print("\n[PAYMENT]")
+        print("15. Bayar Booking")
+        print("16. Cek Detail Pembayaran")
+        print("17. Laporan Keuangan (Admin)")
+        print("18. Refund Payment (Admin)")
         
-        # --- PAYMENT ---
-        print("\n[💰 PAYMENT CRUD]")
-        print("13. Create Payment (Bayar Tiket)")
-        print("14. Read Payment Detail (by Booking Code)")
-        print("15. Read All Payments (Admin)")
-        print("16. Delete/Refund Payment (Admin)")
+        print("\n0. EXIT")
 
-        print("\n0.  EXIT")
+        p = get_input("\n>> Pilih Menu: ")
+
+        if p == '1': register_user(get_input("Nama: "), get_input("Email: "), get_input("Pass: "), get_input("Role: "), get_input("Telp: "))
+        elif p == '2': list_users()
+        elif p == '3': update_user_password(get_input("Email: "), get_input("New Pass: "))
+        elif p == '4': delete_user(get_input("Email Hapus: "))
         
-        c = input("\n>> Pilih Menu (0-16): ").strip()
+        elif p == '5': 
+            adm = authenticate_admin()
+            if adm: create_event(adm)
+        elif p == '6': list_events()
+        elif p == '7': 
+            adm = authenticate_admin()
+            if adm: update_event_price(get_input("Event ID: ", int), get_input("Harga Baru: ", float))
+        elif p == '8': 
+            adm = authenticate_admin()
+            if adm: delete_event(get_input("Event ID: ", int))
+        elif p == '9': 
+            adm = authenticate_admin()
+            if adm: generate_seats(get_input("Event ID: ", int), get_input("Jml Tambahan: ", int))
+        elif p == '10': view_seat_map(get_input("Event ID: ", int))
 
-        # [USER]
-        if c == '1':
-            add_user(input("Nama: "), input("Email: "), input("Password: "), input("Role (Customer/Admin): "))
-        elif c == '2':
-            for u in get_all_users(): print(f"[{u.id}] {u.name} ({u.role}) | {u.email}")
-        elif c == '3':
-            update_user_password(input("Email: "), input("New Pass: "))
-        elif c == '4':
-            delete_user(input("Email to Delete: "))
+        elif p == '11': create_booking_with_seats()
+        elif p == '12': my_bookings(get_input("Email Anda: "))
+        elif p == '13': 
+            adm = authenticate_admin()
+            if adm: get_all_bookings()
+        elif p == '14': cancel_booking(get_input("Kode Booking: "))
 
-        # [EVENT]
-        elif c == '5':
-            admin = authenticate_admin()
-            if admin:
-                add_event(admin, input("Name: "), input("Desc: "), get_valid_date("Date YYYY-MM-DD HH:MM:SS: "), input("Venue: "), get_valid_int("Capacity: "), get_valid_float("Price: "))
-        elif c == '6':
-            for e in get_all_events(): print(f"[{e.id}] {e.name} | Rp {e.ticket_price} | Sisa: {e.capacity}")
-        elif c == '7':
-            admin = authenticate_admin()
-            if admin:
-                update_event_price(get_valid_int("Event ID: "), get_valid_float("New Price: "))
-        elif c == '8':
-            admin = authenticate_admin()
-            if admin:
-                delete_event(get_valid_int("Event ID: "))
+        elif p == '15': process_payment()
+        elif p == '16': get_payment_detail(get_input("Kode Booking: "))
+        elif p == '17': 
+            adm = authenticate_admin()
+            if adm: get_all_payments()
+        elif p == '18': 
+            adm = authenticate_admin()
+            if adm: refund_payment(get_input("Payment ID: ", int))
 
-        # [BOOKING]
-        elif c == '9':
-            add_booking(input("Customer Email: "), get_valid_int("Event ID: "), get_valid_int("Qty: "))
-        elif c == '10':
-            for b in get_my_bookings(input("My Email: ")): 
-                print(f"[{b.booking_code}] {b.event.name} | Status: {b.status} | Rp {b.total_price}")
-        elif c == '11':
-            admin = authenticate_admin()
-            if admin:
-                for b in get_all_bookings(): print(f"[{b.booking_code}] User: {b.customer.email} -> EventID: {b.event_id} ({b.status})")
-        elif c == '12':
-            cancel_booking(input("Booking Code to Cancel: "))
-
-        # [PAYMENT]
-        elif c == '13':
-            print("\n--- FORM PEMBAYARAN ---")
-            code = input("Kode Booking: ")
-            amt = get_valid_float("Nominal Bayar: ")
-            mth = input("Metode (Transfer/Cash): ")
-            make_payment(code, amt, mth)
-        elif c == '14':
-            pay = get_payment_detail(input("Booking Code: "))
-            if pay: print(f"ID: {pay.id} | Amount: {pay.amount} | Status: {pay.status} | Date: {pay.payment_date}")
-            else: print("Belum ada data pembayaran.")
-        elif c == '15':
-            admin = authenticate_admin()
-            if admin:
-                for p in get_all_payments(): print(f"PayID: {p.id} -> BookID: {p.booking.booking_code} | Rp {p.amount} ({p.status})")
-        elif c == '16':
-            admin = authenticate_admin()
-            if admin:
-                refund_payment(get_valid_int("Payment ID to Refund: "))
-
-        elif c == '0':
-            print("Bye!"); break
-        else:
-            print("Pilihan tidak tersedia.")
+        elif p == '0': break
+        else: print("❌ Pilihan tidak valid.")
 
 if __name__ == "__main__":
     main_menu()
